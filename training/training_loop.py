@@ -26,6 +26,8 @@ from torch_utils.ops import grid_sample_gradfix
 import legacy
 from metrics import metric_main
 
+from ple.model import PermutationInvariantHyperNetwork
+
 #----------------------------------------------------------------------------
 
 def setup_snapshot_image_grid(training_set, random_seed=0):
@@ -153,12 +155,27 @@ def training_loop(
     D = dnnlib.util.construct_class_by_name(**D_kwargs, **common_kwargs).train().requires_grad_(False).to(device) # subclass of torch.nn.Module
     G_ema = copy.deepcopy(G).eval()
 
+    hyper_nets = torch.nn.ModuleDict({
+        'G': PermutationInvariantHyperNetwork(
+                training_set.image_shape[0] * training_set.image_shape[1] * training_set.image_shape[2],
+                [32, 64, 96],
+                G,
+                use_outer_net=0,
+        ).train().to(device),
+        'D': PermutationInvariantHyperNetwork(
+                training_set.image_shape[0] * training_set.image_shape[1] * training_set.image_shape[2],
+                [32, 64, 96],
+                D,
+                use_outer_net=0,
+        ).train().to(device),
+    })
+
     # Resume from existing pickle.
     if (resume_pkl is not None) and (rank == 0):
         print(f'Resuming from "{resume_pkl}"')
         with dnnlib.util.open_url(resume_pkl) as f:
             resume_data = legacy.load_network_pkl(f)
-        for name, module in [('G', G), ('D', D), ('G_ema', G_ema)]:
+        for name, module in [('G', G), ('D', D), ('G_ema', G_ema), ('hyper_nets', hyper_nets)]:
             misc.copy_params_and_buffers(resume_data[name], module, require_all=False)
 
     # Print network summary tables.
@@ -182,7 +199,7 @@ def training_loop(
     # Distribute across GPUs.
     if rank == 0:
         print(f'Distributing across {num_gpus} GPUs...')
-    for module in [G, D, G_ema, augment_pipe]:
+    for module in [G, D, G_ema, hyper_nets, augment_pipe]:
         if module is not None and num_gpus > 1:
             for param in misc.params_and_buffers(module):
                 torch.distributed.broadcast(param, src=0)
@@ -190,7 +207,7 @@ def training_loop(
     # Setup training phases.
     if rank == 0:
         print('Setting up training phases...')
-    loss = dnnlib.util.construct_class_by_name(device=device, G=G, D=D, augment_pipe=augment_pipe, **loss_kwargs) # subclass of training.loss.Loss
+    loss = dnnlib.util.construct_class_by_name(device=device, G=G, D=D, hyper_nets=hyper_nets, augment_pipe=augment_pipe, **loss_kwargs) # subclass of training.loss.Loss
     phases = []
     for name, module, opt_kwargs, reg_interval in [('G', G, G_opt_kwargs, G_reg_interval), ('D', D, D_opt_kwargs, D_reg_interval)]:
         if reg_interval is None:
@@ -357,7 +374,7 @@ def training_loop(
         snapshot_pkl = None
         snapshot_data = None
         if (network_snapshot_ticks is not None) and (done or cur_tick % network_snapshot_ticks == 0):
-            snapshot_data = dict(G=G, D=D, G_ema=G_ema, augment_pipe=augment_pipe, training_set_kwargs=dict(training_set_kwargs))
+            snapshot_data = dict(G=G, D=D, G_ema=G_ema, hyper_nets=hyper_nets, augment_pipe=augment_pipe, training_set_kwargs=dict(training_set_kwargs))
             for key, value in snapshot_data.items():
                 if isinstance(value, torch.nn.Module):
                     value = copy.deepcopy(value).eval().requires_grad_(False)
