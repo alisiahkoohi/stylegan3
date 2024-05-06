@@ -9,6 +9,11 @@
 """Calculate quality metrics for previous training run or pretrained network pickle."""
 
 import os
+
+
+os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+os.environ["CUDA_VISIBLE_DEVICES"] = "2"
+
 import click
 import json
 import tempfile
@@ -23,6 +28,8 @@ from torch_utils import training_stats
 from torch_utils import custom_ops
 from torch_utils import misc
 from torch_utils.ops import conv2d_gradfix
+
+
 
 #----------------------------------------------------------------------------
 
